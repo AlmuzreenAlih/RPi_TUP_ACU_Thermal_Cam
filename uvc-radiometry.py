@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+Speed = 0.3
+
 
 import ImportantFunctions as IF
 import datetime
@@ -19,6 +21,8 @@ import keyboard
 from uvctypes import *
 import time
 import cv2
+cap = cv2.VideoCapture(2)
+
 import numpy as np
 try:
     from queue import Queue
@@ -28,6 +32,58 @@ import platform
 faceCascade = cv2.CascadeClassifier('haarcascade_frontalface_alt.xml')
 BUF_SIZE = 2
 q = Queue(BUF_SIZE)
+
+import serial
+SerialData = serial.Serial("/dev/ttyACM0", 9600, timeout = 0.2)
+###SerialData = serial.Serial("com10", 9600, timeout = 0.2)
+SerialData.setDTR(False)
+time.sleep(1)
+SerialData.flushInput()
+SerialData.setDTR(True)
+
+def Send(SerialData, character, Description):
+    SerialData.write(bytes(character, "utf-8"))
+    print("ARDUINO SEND: ", Description)
+
+def SendWait(SerialData, character, timeout, Description):
+    SerialData.write(bytes(character, "utf-8"))
+    reading = SerialData.read().decode("utf-8")
+    ST = time.time()
+    while True:
+        if reading != "":
+            break
+        if time.time() - ST > timeout:
+            break
+    print("ARDUINO SEND: ", Description)
+
+import datetime
+
+def days_since_jan1(year_start_timestamp):
+    year_start = datetime.datetime.fromtimestamp(year_start_timestamp)
+    jan1 = datetime.date(year_start.year, 1, 1)
+    year_start_date = year_start.date()
+    days_since_jan1 = (year_start_date - jan1).days + 1
+
+    if is_leap_year(year_start.year) and year_start_date > datetime.date(year_start.year, 2, 28):
+        days_since_jan1 += 1
+
+    return days_since_jan1
+
+def is_leap_year(year):
+    if year % 4 != 0:
+        return False
+    elif year % 100 != 0:
+        return True
+    elif year % 400 != 0:
+        return False
+    else:
+        return True
+
+def is_odd(number):
+    return number % 2 != 0
+
+def is_even(number):
+    return number % 2 == 0
 
 
 def py_frame_callback(frame, userptr):
@@ -140,14 +196,26 @@ threshold_value = 90
 area_required = 270
 box_size = 30
 box_size2 = 40
+OrigRGBCamWidth = 1920
+RGBCamWidthCrop = 480
+CropX1RGB,CropX2RGB,CropY1RGB,CropY2RGB = 0,OrigRGBCamWidth-RGBCamWidthCrop,0,1080
+
+RequiredCounter1 = 10
+RequiredCounter2 = 15
+RequiredCounter = RequiredCounter1
+CurrentTemp1 = 24
+CurrentTemp2 = 24
 def MainLoop():
     global threshold_value
     global area_required
     global box_size
     global box_size2
+    global CropX1RGB,CropX2RGB,CropY1RGB,CropY2RGB, PrevCount2, FalseCounter, ACU1_Op, ACU2_Op
+    global OrigRGBCamWidth, RGBCamWidthCrop
+    font = cv2.FONT_HERSHEY_SIMPLEX
     
     data = q.get(True, 500)    
-    print(len(data),len(data[0]))
+    # print(len(data),len(data[0]))
     data = cv2.resize(data[:, :], (240, 180))
     temperature = data / 100 - 273.15
     min_temp = 33
@@ -246,7 +314,6 @@ def MainLoop():
             if white_pixels > area_required:
                 cv2.rectangle(new_img, (j, i), (j+box_size2, i+box_size), (0, 255, 0), 1)
                 Count = Count + 1
-                font = cv2.FONT_HERSHEY_SIMPLEX
                 # cv2.putText(new_img, str(Count), (j, i+7), font, 0.35, (0, 255, 0), 1, cv2.LINE_AA)
                 logics.append(True)
             else:
@@ -258,7 +325,22 @@ def MainLoop():
     
     while True:
         try:
-            RGB_CamImg = cv2.imread("downloaded.png")
+            # RGB_CamImg = cv2.imread("downloaded.png")
+            _,RGB_CamImg = cap.read()
+            RGB_CamImg = RGB_CamImg[int(RGBCamWidthCrop/2):int(OrigRGBCamWidth-RGBCamWidthCrop/2), 0:1080]
+            Max = OrigRGBCamWidth-RGBCamWidthCrop
+            Maxy = 1080
+            if CropX1RGB < 0:
+                CropX1RGB = 0
+            if CropX2RGB > Max:
+                CropX2RGB = Max
+            if CropY1RGB < 0:
+                CropY1RGB = 0
+            if CropY2RGB > Maxy:
+                CropY2RGB = Maxy
+            # print(CropX1RGB, CropX2RGB, CropY1RGB, CropY2RGB)
+            # print(RGB_CamImg.shape)
+            RGB_CamImg = RGB_CamImg[CropY1RGB:CropY2RGB, CropX1RGB:CropX2RGB]
             RGB_CamImg = cv2.resize(RGB_CamImg,(240,180))
             a=RGB_CamImg #Pang save lang, para safe
 
@@ -271,15 +353,15 @@ def MainLoop():
                 minSize=(30, 30),
                 flags=cv2.CASCADE_SCALE_IMAGE
             )
-            print(faces)
+            # print(faces)
             Centers = []
             for (x, y, w, h) in faces:
                 # cv2.rectangle(a, (x, y), (x+w, y+h), (0, 255, 0), 2)
                 Centers.append((x+int(w/2),y+int(h/2)))
-            print(Centers)
+            # print(Centers)
             break
         except:
-            pass
+            print("error")
     Count2 = 0
     itera = 0
     for i in range(0, rows, box_size):
@@ -308,7 +390,91 @@ def MainLoop():
             #     font = cv2.FONT_HERSHEY_SIMPLEX
             #     cv2.putText(new_img, str(Count), (j, i+7), font, 0.35, (0, 255, 0), 1, cv2.LINE_AA)
     
-    pips_value_label.configure(text="People (approx.): " + str(Count2))
+    if People_Entry.get().isdecimal():
+        Count2 = int(People_Entry.get())
+        # print("Manual People: ",People_Entry.get())
+    global TrueCounter, RequiredCounter, RequiredCounter1, RequiredCounter2,Speed
+
+    try:
+        if PrevCount2 == Count2:
+            TrueCounter = TrueCounter + Speed
+            FalseCounter = 0
+        else:
+            FalseCounter = FalseCounter + Speed
+            if FalseCounter > 5:
+                PrevCount2 = Count2
+                TrueCounter = 0
+                FalseCounter = 0
+    except:
+        TrueCounter = 0
+        FalseCounter = 0
+        PrevCount2 = Count2
+        pass
+
+    global CurrentTemp1,CurrentTemp2,DesiredTemp1,DesiredTemp2
+    Applied = ""
+    if TrueCounter > RequiredCounter:
+        TrueCounter = 0
+        RequiredCounter = RequiredCounter2
+        CurrentTemp1 = int(Current1_label.get())
+        CurrentTemp2 = int(Current2_label.get())
+        DateInteger = days_since_jan1(time.time()) #Leap year is considered ;)
+        print("date: ", DateInteger)
+        if is_odd(DateInteger): #DAY 1,3,5,7...
+            if Count2 >= 35:
+                if Count2 <= 20:
+                    DesiredTemp1 = 23
+                else:
+                    DesiredTemp1 = 25
+                DesiredTemp2 = 25 ##Supplementary
+            else:
+                if Count2 <= 20:
+                    DesiredTemp1 = 23
+                else:
+                    DesiredTemp1 = 25
+                DesiredTemp2 = 100 ##Supplementary (100 means OFF)
+        
+        if is_even(DateInteger): #DAY 2,4,6,8...
+            if Count2 >= 35:
+                if Count2 <= 20:
+                    DesiredTemp2 = 23
+                else:
+                    DesiredTemp2 = 25
+                DesiredTemp1 = 25 ##Supplementary
+            else:
+                if Count2 <= 20:
+                    DesiredTemp2 = 23
+                else:
+                    DesiredTemp2 = 25
+                DesiredTemp1 = 100 ##Supplementary (100 means OFF)
+                
+
+        ApplyTemp()
+        Current1_label.delete(0,tk.END)
+        Current2_label.delete(0,tk.END)
+        if DesiredTemp1 > 50:
+            Current1_label.configure(foreground="red")
+        else:
+            Current1_label.configure(foreground="black")
+
+        if DesiredTemp2 > 50:
+            Current2_label.configure(foreground="red")
+        else:
+            Current2_label.configure(foreground="black")
+            
+        Current1_label.insert(tk.END, str(CurrentTemp1))
+        Current2_label.insert(tk.END, str(CurrentTemp2))
+        Applied = " Applied"
+    
+    seconds = int(TrueCounter)   # replace with your desired number of seconds
+
+    # Calculate the number of minutes and seconds
+    minutes, seconds = divmod(seconds, 60)
+
+    # Format the output string with leading zeros
+    output_string = '{:02d}:{:02d}'.format(minutes, seconds)
+
+    pips_value_label.configure(text="People (approx.): " + str(Count2) + " (" + str(output_string) + Applied +")")
     min_value_label.configure(text="Min Temp: " + str(min_temp_fnd) + " C")
     max_value_label.configure(text="Max Temp: " + str(max_temp_fnd) + " C")
     
@@ -335,6 +501,45 @@ def FindCenter(j, i, box_size_2, box_size, centers):
             return center
     return False
 
+def ApplyTemp():
+    global CurrentTemp1,CurrentTemp2,DesiredTemp1,DesiredTemp2, ACU1_Op, ACU2_Op
+    Diff1 = DesiredTemp1 - int(CurrentTemp1)
+    if abs(Diff1) < 50:
+        if ACU1_Op == False:
+            ACU1_Op = True
+            Send(SerialData,"A","ACU1 ON"); time.sleep(1)
+            #send enable
+        for i in range(abs(Diff1)):
+            if Diff1 > 0:
+                Send(SerialData,"C","ACU1 TempDown"); time.sleep(1)
+                CurrentTemp1 = CurrentTemp1 - 1
+            else:
+                Send(SerialData,"B","ACU1 TempUp"); time.sleep(1)
+                CurrentTemp1 = CurrentTemp1 + 1
+    else:
+        if ACU1_Op == True:
+            ACU1_Op = False
+            Send(SerialData,"A","ACU1 OFF"); time.sleep(1)
+            #send disable
+    print(DesiredTemp2, CurrentTemp2)
+    Diff2 = DesiredTemp2 - int(CurrentTemp2)
+    if abs(Diff2) < 50:
+        if ACU2_Op == False:
+            ACU2_Op = True
+            Send(SerialData,"D","ACU2 ON"); time.sleep(1)
+            #send enable
+        for i in range(abs(Diff2)):
+            if Diff1 > 0:
+                Send(SerialData,"F","ACU2 TempDown"); time.sleep(1)
+                CurrentTemp2 = CurrentTemp2 - 1
+            else:
+                Send(SerialData,"E","ACU2 TempUp"); time.sleep(1)
+                CurrentTemp2 = CurrentTemp2 + 1
+    else:
+        if ACU2_Op == True:
+            ACU2_Op = False
+            Send(SerialData,"D","ACU2 OFF"); time.sleep(0.5)
+            #send disable
 
 GUI1 = tk.Frame(root)
 GUI1.pack()
@@ -391,8 +596,61 @@ box2_Entry = tk.Entry(GUI1, font=subFont2, bg='white',width=5)
 box2_Entry.place(x=40, y=380)
 box2_Entry.insert(0, box_size2)
 
+People_Entry = tk.Entry(GUI1, font=subFont2, bg='white',width=5)
+People_Entry.place(x=500, y=10)
 
+Counter_label = tk.Label(GUI1, font=subFont2, bg='white', height=1, text="Timer: ")
+Counter_label.place(x=40, y=420)
 
+Current_label = tk.Label(GUI1, font=subFont2, bg='white', height=1, text="Current: ")
+Current_label.place(x=10, y=420)
+
+Desired_label = tk.Label(GUI1, font=subFont2, bg='white', height=1, text="Desired: ")
+Desired_label.place(x=10, y=440)
+
+f = open("CurrentTemp1.txt", "r+")
+CurrentTemp1 = f.read()
+f.close()
+ACU1_Op = False
+Current1_label = tk.Entry(GUI1, font=subFont2, bg='white',width=5)
+Current1_label.place(x=100, y=420)
+Current1_label.insert(tk.END, str(CurrentTemp1))
+
+f = open("CurrentTemp2.txt", "r+")
+CurrentTemp2 = f.read()
+f.close()
+ACU2_Op = False
+Current2_label = tk.Entry(GUI1, font=subFont2, bg='white',width=5)
+Current2_label.place(x=150, y=420)
+Current2_label.insert(tk.END, str(CurrentTemp2))
+
+def key_input(event):
+    global CropX1RGB,CropX2RGB,CropY1RGB,CropY2RGB, Speed
+    key_press = event.char
+    if key_press.lower() == 'a':
+        CropX1RGB = CropX1RGB - 10
+    elif key_press.lower() == 's':
+        CropX1RGB = CropX1RGB + 10
+    elif key_press.lower() == 'd':
+        CropX2RGB = CropX2RGB - 10
+    elif key_press.lower() == 'f':
+        CropX2RGB = CropX2RGB + 10
+        
+    if key_press.lower() == 't':
+        CropY1RGB = CropY1RGB - 10
+    elif key_press.lower() == 'g':
+        CropY1RGB = CropY1RGB + 10
+    elif key_press.lower() == 'h':
+        CropY2RGB = CropY2RGB - 10
+    elif key_press.lower() == 'n':
+        CropY2RGB = CropY2RGB + 10
+
+    if key_press.lower() == 'q':
+        Speed = Speed - 0.1
+    elif key_press.lower() == 'w':
+        Speed = Speed + 0.1
+
+root.bind("<KeyPress>", key_input)
 
 root.after(5, MainLoop)
 root.mainloop()
